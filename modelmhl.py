@@ -154,13 +154,13 @@ class WGAN(object):
 
     self.d_loss_real = tf.reduce_mean(
       tf.nn.sigmoid_cross_entropy_with_logits(
-        logits=self.D_logits, targets=tf.ones_like(self.D)))
+        logits=self.D_logits, labels=tf.ones_like(self.D)))
     self.d_loss_fake = tf.reduce_mean(
       tf.nn.sigmoid_cross_entropy_with_logits(
-        logits=self.D_logits_, targets=tf.zeros_like(self.D_)))
+        logits=self.D_logits_, labels=tf.zeros_like(self.D_)))
     self.g_loss = tf.reduce_mean(
       tf.nn.sigmoid_cross_entropy_with_logits(
-        logits=self.D_logits_, targets=tf.ones_like(self.D_)))
+        logits=self.D_logits_, labels=tf.ones_like(self.D_)))
     self.c1_loss = -tf.minimum(tf.reduce_min(C1),0)*10000
     self.c2_loss = -tf.minimum(tf.reduce_min(-1*(4*C2*C2-12*C1*C3)),0)*10000
 
@@ -199,7 +199,7 @@ class WGAN(object):
     try:
       tf.global_variables_initializer().run()
     except:
-      tf.initialize_all_variables().run()
+      tf.global_variables_initializer().run()
 
     self.g_sum = tf.summary.merge([self.z_sum, self.d__sum,self.G_sum, self.d_loss_fake_sum, self.g_loss_sum])
     self.d_sum = tf.summary.merge([self.z_sum, self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
@@ -427,7 +427,7 @@ class WGAN(object):
     try:
       tf.global_variables_initializer().run()
     except:
-      tf.initialize_all_variables().run()
+      tf.global_variables_initializer().run()
 
     self.g_sum = tf.summary.merge([self.z_sum, self.d__sum,self.G_sum, self.d_loss_fake_sum, self.g_loss_sum])
     self.d_sum = tf.summary.merge([self.z_sum, self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
