@@ -15,6 +15,14 @@ from six.moves import xrange
 import scipy.io as sio
 from ops import *
 from utils import *
+from watergan_runtime import (
+    effective_train_batches,
+    list_depth_files,
+    load_depth_array,
+    parallel_load_many,
+    parallel_map,
+    should_log,
+)
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
@@ -182,7 +190,7 @@ class WGAN(object):
     """Train WGAN"""
     water_data = glob(os.path.join("./data", config.water_dataset, self.input_fname_pattern))
     air_data = glob(os.path.join("./data", config.air_dataset, self.input_fname_pattern))
-    depth_data = glob(os.path.join("./data", config.depth_dataset, "*.mat"))
+    depth_data = list_depth_files(config.depth_dataset)
 
     d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
               .minimize(self.d_loss, var_list=self.d_vars)
@@ -233,10 +241,9 @@ class WGAN(object):
         "./data", config.water_dataset, self.input_fname_pattern)))
       air_data = sorted(glob(os.path.join(
         "./data", config.air_dataset, self.input_fname_pattern)))
-      depth_data = sorted(glob(os.path.join(
-        "./data", config.depth_dataset, "*.mat")))
+      depth_data = list_depth_files(config.depth_dataset)
 
-      water_batch_idxs = min(min(len(air_data),len(water_data)), config.train_size) // config.batch_size
+      water_batch_idxs = effective_train_batches(air_data, depth_data, config)
       air_batch_idxs = water_batch_idxs
       randombatch = np.arange(water_batch_idxs*config.batch_size)
       np.random.shuffle(randombatch)
@@ -247,18 +254,24 @@ class WGAN(object):
         depth_batch_files = []
 
         for id in xrange(0, config.batch_size):
-            water_batch_files = np.append(water_batch_files,water_data[randombatch[idx+id]])
+            water_batch_files = np.append(
+              water_batch_files,
+              water_data[randombatch[idx+id] % len(water_data)])
             air_batch_files = np.append(air_batch_files,air_data[randombatch[idx+id]])
             depth_batch_files = np.append(depth_batch_files,depth_data[randombatch[idx+id]])
         #print(depth_batch_files)
         if self.is_crop:
-            air_batch = [self.read_img(air_batch_file) for air_batch_file in air_batch_files]
-            water_batch = [self.read_img(water_batch_file) for water_batch_file in water_batch_files]
-            depth_batch = [self.read_depth(depth_batch_file) for depth_batch_file in depth_batch_files]
+            air_batch, water_batch, depth_batch = parallel_load_many((
+              (self.read_img, air_batch_files),
+              (self.read_img, water_batch_files),
+              (self.read_depth, depth_batch_files),
+            ))
         else:
-            air_batch = [scipy.misc.imread(air_batch_file) for air_batch_file in air_batch_files]
-            water_batch = [scipy.misc.imread(water_batch_file) for water_batch_file in water_batch_files]
-            depth_batch = [self.read_depth(depth_batch_file) for depth_batch_file in depth_batch_files]
+            air_batch, water_batch, depth_batch = parallel_load_many((
+              (scipy.misc.imread, air_batch_files),
+              (scipy.misc.imread, water_batch_files),
+              (self.read_depth, depth_batch_files),
+            ))
         air_batch_images = np.array(air_batch).astype(np.float32)
         water_batch_images = np.array(water_batch).astype(np.float32)
         depth_batch_images = np.expand_dims(depth_batch,axis=3)
@@ -270,39 +283,59 @@ class WGAN(object):
 
         batch_z = np.random.uniform(-1,1,[config.batch_size,self.z_dim]).astype(np.float32)
 
-        # Update D network
-        _, summary_str = self.sess.run([d_optim, self.d_sum],
-          feed_dict={ self.z: batch_z,self.water_inputs: water_batch_images,self.air_inputs: air_batch_images,self.depth_inputs:depth_batch_images,self.R2:r2, self.R4:r4, self.R6:r6})
-        self.writer.add_summary(summary_str, counter)
+        log_step = should_log(counter)
+        d_feed = {
+          self.z: batch_z,
+          self.water_inputs: water_batch_images,
+          self.air_inputs: air_batch_images,
+          self.depth_inputs: depth_batch_images,
+          self.R2: r2,
+          self.R4: r4,
+          self.R6: r6,
+        }
+        g_feed = {
+          self.z: batch_z,
+          self.air_inputs: air_batch_images,
+          self.depth_inputs: depth_batch_images,
+          self.R2: r2,
+          self.R4: r4,
+          self.R6: r6,
+        }
 
-        # Update G network
-        _, summary_str = self.sess.run([g_optim, self.g_sum],
-          feed_dict={self.z:batch_z, self.air_inputs: air_batch_images,self.depth_inputs:depth_batch_images,self.R2: r2, self.R4: r4, self.R6: r6})
-        self.writer.add_summary(summary_str, counter)
+        # Preserve the original schedule: one D update and two G updates.
+        if log_step:
+          _, summary_str = self.sess.run([d_optim, self.d_sum], feed_dict=d_feed)
+          self.writer.add_summary(summary_str, counter)
+        else:
+          self.sess.run(d_optim, feed_dict=d_feed)
 
-        # Run g_optim twice to make sure that d_loss does not go to zero (different from paper)
-        _, summary_str = self.sess.run([g_optim, self.g_sum],
-          feed_dict={self.z:batch_z,self.air_inputs: air_batch_images,self.depth_inputs:depth_batch_images, self.R2:r2, self.R4:r4, self.R6:r6})
-        self.writer.add_summary(summary_str, counter)
-
-        errD_fake = self.d_loss_fake.eval({self.z:batch_z, self.air_inputs: air_batch_images,self.depth_inputs:depth_batch_images,self.R2:r2, self.R4:r4, self.R6:r6})
-        errD_real = self.d_loss_real.eval({self.water_inputs: water_batch_images})
-        errG = self.g_loss.eval({self.z:batch_z,self.air_inputs: air_batch_images,self.depth_inputs:depth_batch_images,self.R2:r2, self.R4:r4, self.R6:r6})
+        self.sess.run(g_optim, feed_dict=g_feed)
+        if log_step:
+          _, summary_str = self.sess.run([g_optim, self.g_sum], feed_dict=g_feed)
+          self.writer.add_summary(summary_str, counter)
+        else:
+          self.sess.run(g_optim, feed_dict=g_feed)
 
         counter += 1
-        print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-          % (epoch, idx, water_batch_idxs,
-            time.time() - start_time, errD_fake+errD_real, errG))
-
-        #if np.mod(counter, 5) == 1:
-        if (1):
-          print(self.sess.run('wc_generator/g_atten/g_eta_r:0'))
-          print(self.sess.run('wc_generator/g_atten/g_eta_g:0'))
-          print(self.sess.run('wc_generator/g_atten/g_eta_b:0'))
-          print(self.sess.run('wc_generator/g_vig/g_amp:0'))
-          print(self.sess.run('wc_generator/g_vig/g_c1:0'))
-          print(self.sess.run('wc_generator/g_vig/g_c2:0'))
-          print(self.sess.run('wc_generator/g_vig/g_c3:0'))
+        if log_step:
+          errD_fake, errD_real, errG = self.sess.run(
+            [self.d_loss_fake, self.d_loss_real, self.g_loss],
+            feed_dict=d_feed)
+          batch_number = idx // config.batch_size + 1
+          print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+            % (epoch, batch_number, water_batch_idxs,
+              time.time() - start_time, errD_fake+errD_real, errG))
+          debug_values = self.sess.run([
+            'wc_generator/g_atten/g_eta_r:0',
+            'wc_generator/g_atten/g_eta_g:0',
+            'wc_generator/g_atten/g_eta_b:0',
+            'wc_generator/g_vig/g_amp:0',
+            'wc_generator/g_vig/g_c1:0',
+            'wc_generator/g_vig/g_c2:0',
+            'wc_generator/g_vig/g_c3:0',
+          ])
+          for debug_value in debug_values:
+            print(debug_value)
 
 
         if (epoch == self.save_epoch) and (checkprint == 0):
@@ -318,15 +351,15 @@ class WGAN(object):
                 sample_air_batch_files = air_data[idx*config.batch_size:(idx+1)*config.batch_size]
                 sample_depth_batch_files = depth_data[idx*config.batch_size:(idx+1)*config.batch_size]
                 if self.is_crop:
-                    sample_air_batch = [self.read_img_sample(sample_air_batch_file) for sample_air_batch_file in sample_air_batch_files]
-                    sample_water_batch = [self.read_img_sample(sample_water_batch_file) for sample_water_batch_file in sample_water_batch_files]
-                    sample_depth_small_batch = [self.read_depth_small(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
-                    sample_depth_batch = [self.read_depth_sample(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
+                    sample_air_batch = parallel_map(self.read_img_sample, sample_air_batch_files)
+                    sample_water_batch = parallel_map(self.read_img_sample, sample_water_batch_files)
+                    sample_depth_small_batch = parallel_map(self.read_depth_small, sample_depth_batch_files)
+                    sample_depth_batch = parallel_map(self.read_depth_sample, sample_depth_batch_files)
                 else:
-                    sample_air_batch = [scipy.misc.imread(sample_air_batch_file) for sample_air_batch_file in sample_air_batch_files]
-                    sample_water_batch = [scipy.misc.imread(sample_water_batch_file) for sample_water_batch_file in sample_water_batch_files]
-                    sample_depth_batch = [self.read_depth_sample(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
-                    sample_depth_small_batch = [self.read_depth_small(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
+                    sample_air_batch = parallel_map(scipy.misc.imread, sample_air_batch_files)
+                    sample_water_batch = parallel_map(scipy.misc.imread, sample_water_batch_files)
+                    sample_depth_batch = parallel_map(self.read_depth_sample, sample_depth_batch_files)
+                    sample_depth_small_batch = parallel_map(self.read_depth_small, sample_depth_batch_files)
                 sample_air_images = np.array(sample_air_batch).astype(np.float32)
                 sample_water_images = np.array(sample_water_batch).astype(np.float32)
                 sample_depth_small_images = np.expand_dims(sample_depth_small_batch,axis=3)
@@ -385,7 +418,7 @@ class WGAN(object):
     """Train WGAN"""
     water_data = glob(os.path.join("./data", config.water_dataset, self.input_fname_pattern))
     air_data = glob(os.path.join("./data", config.air_dataset, self.input_fname_pattern))
-    depth_data = glob(os.path.join("./data", config.depth_dataset, "*.mat"))
+    depth_data = list_depth_files(config.depth_dataset)
 
     d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
               .minimize(self.d_loss, var_list=self.d_vars)
@@ -431,10 +464,9 @@ class WGAN(object):
         "./data", config.water_dataset, self.input_fname_pattern)))
       air_data = sorted(glob(os.path.join(
         "./data", config.air_dataset, self.input_fname_pattern)))
-      depth_data = sorted(glob(os.path.join(
-        "./data", config.depth_dataset, "*.mat")))
+      depth_data = list_depth_files(config.depth_dataset)
 
-      water_batch_idxs = min(min(len(air_data),len(water_data)), config.train_size) // config.batch_size
+      water_batch_idxs = effective_train_batches(air_data, depth_data, config)
       air_batch_idxs = water_batch_idxs
       randombatch = np.arange(water_batch_idxs*config.batch_size)
       np.random.shuffle(randombatch)
@@ -459,15 +491,15 @@ class WGAN(object):
                 sample_air_batch_files = air_data[idx*config.batch_size:(idx+1)*config.batch_size]
                 sample_depth_batch_files = depth_data[idx*config.batch_size:(idx+1)*config.batch_size]
                 if self.is_crop:
-                    sample_air_batch = [self.read_img_sample(sample_air_batch_file) for sample_air_batch_file in sample_air_batch_files]
-                    sample_water_batch = [self.read_img_sample(sample_water_batch_file) for sample_water_batch_file in sample_water_batch_files]
-                    sample_depth_small_batch = [self.read_depth_small(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
-                    sample_depth_batch = [self.read_depth_sample(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
+                    sample_air_batch = parallel_map(self.read_img_sample, sample_air_batch_files)
+                    sample_water_batch = parallel_map(self.read_img_sample, sample_water_batch_files)
+                    sample_depth_small_batch = parallel_map(self.read_depth_small, sample_depth_batch_files)
+                    sample_depth_batch = parallel_map(self.read_depth_sample, sample_depth_batch_files)
                 else:
-                    sample_air_batch = [scipy.misc.imread(sample_air_batch_file) for sample_air_batch_file in sample_air_batch_files]
-                    sample_water_batch = [scipy.misc.imread(sample_water_batch_file) for sample_water_batch_file in sample_water_batch_files]
-                    sample_depth_batch = [self.read_depth_sample(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
-                    sample_depth_small_batch = [self.read_depth_small(sample_depth_batch_file) for sample_depth_batch_file in sample_depth_batch_files]
+                    sample_air_batch = parallel_map(scipy.misc.imread, sample_air_batch_files)
+                    sample_water_batch = parallel_map(scipy.misc.imread, sample_water_batch_files)
+                    sample_depth_batch = parallel_map(self.read_depth_sample, sample_depth_batch_files)
+                    sample_depth_small_batch = parallel_map(self.read_depth_small, sample_depth_batch_files)
                 sample_air_images = np.array(sample_air_batch).astype(np.float32)
                 sample_water_images = np.array(sample_water_batch).astype(np.float32)
                 sample_depth_small_images = np.expand_dims(sample_depth_small_batch,axis=3)
@@ -736,8 +768,7 @@ class WGAN(object):
       return False
 
   def read_depth(self, filename):
-    depth_mat = sio.loadmat(filename)
-    depthtmp=depth_mat["depth"]
+    depthtmp = load_depth_array(filename)
     ds = depthtmp.shape
     if self.is_crop:
       depth = scipy.misc.imresize(depthtmp,(self.output_height,self.output_width),mode='F')
@@ -756,8 +787,7 @@ class WGAN(object):
 
 
   def read_depth_small(self, filename):
-    depth_mat = sio.loadmat(filename)
-    depthtmp=depth_mat["depth"]
+    depthtmp = load_depth_array(filename)
     ds = depthtmp.shape
 
     if self.is_crop:
@@ -768,8 +798,7 @@ class WGAN(object):
     return depth
 
   def read_depth_sample(self, filename):
-    depth_mat = sio.loadmat(filename)
-    depthtmp=depth_mat["depth"]
+    depthtmp = load_depth_array(filename)
     ds = depthtmp.shape
     if self.is_crop:
       depth = scipy.misc.imresize(depthtmp,(self.sh,self.sw),mode='F')

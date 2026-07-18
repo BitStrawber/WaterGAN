@@ -60,3 +60,25 @@ If you find this work useful for your research, please cite WaterGAN in your pub
 	Title = {WaterGAN: Unsupervised Generative Network to Enable Real-time Color Correction of Monocular Underwater Images},
 	Year = {2017}}
 ```
+# exp_2 runtime options
+
+The `modelmhl.py` and `modeljamaica.py` entry points support both legacy MAT
+depth files and compact PNG depth files. Image and depth decoding can run in a
+shared thread pool without changing the configured batch size.
+
+Runtime environment variables:
+
+```bash
+export CUDA_VISIBLE_DEVICES=2
+export WATERGAN_IO_WORKERS=16
+export WATERGAN_LOG_EVERY=10
+export WATERGAN_THROTTLE_DIAGNOSTICS=1
+```
+
+- `WATERGAN_IO_WORKERS` controls parallel image/depth decoding.
+- `WATERGAN_LOG_EVERY` controls the diagnostic interval.
+- `WATERGAN_THROTTLE_DIAGNOSTICS=1` avoids summary, loss, and parameter
+  diagnostic fetches on every batch. It does not change the one-discriminator
+  and two-generator optimizer update schedule.
+- GPU selection is controlled by `CUDA_VISIBLE_DEVICES`; the Python entry
+  points no longer override it.
