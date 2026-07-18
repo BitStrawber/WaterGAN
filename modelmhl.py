@@ -19,6 +19,7 @@ from watergan_runtime import (
     effective_train_batches,
     list_depth_files,
     load_depth_array,
+    normalize_depth,
     parallel_load_many,
     parallel_map,
     should_log,
@@ -770,12 +771,10 @@ class WGAN(object):
   def read_depth(self, filename):
     depthtmp = load_depth_array(filename)
     ds = depthtmp.shape
+    depth = depthtmp
     if self.is_crop:
       depth = scipy.misc.imresize(depthtmp,(self.output_height,self.output_width),mode='F')
-    depth = np.array(depth).astype(np.float32)
-    depth = np.multiply(self.max_depth,np.divide(depth,depth.max()))
-
-    return depth
+    return normalize_depth(depth, self.max_depth)
 
   def read_img(self, filename):
     imgtmp = scipy.misc.imread(filename)
@@ -789,23 +788,18 @@ class WGAN(object):
   def read_depth_small(self, filename):
     depthtmp = load_depth_array(filename)
     ds = depthtmp.shape
-
+    depth = depthtmp
     if self.is_crop:
       depth = scipy.misc.imresize(depthtmp,(self.output_height,self.output_width),mode='F')
-    depth = np.array(depth).astype(np.float32)
-    depth = np.multiply(self.max_depth,np.divide(depth,depth.max()))
-
-    return depth
+    return normalize_depth(depth, self.max_depth)
 
   def read_depth_sample(self, filename):
     depthtmp = load_depth_array(filename)
     ds = depthtmp.shape
+    depth = depthtmp
     if self.is_crop:
       depth = scipy.misc.imresize(depthtmp,(self.sh,self.sw),mode='F')
-    depth = np.array(depth).astype(np.float32)
-    depth = np.multiply(self.max_depth,np.divide(depth,depth.max()))
-
-    return depth
+    return normalize_depth(depth, self.max_depth)
 
   def read_img_sample(self, filename):
     imgtmp = scipy.misc.imread(filename)

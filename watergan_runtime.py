@@ -145,6 +145,18 @@ def load_depth_array(filename):
     return np.nan_to_num(array).astype(np.float32)
 
 
+def normalize_depth(array, max_depth):
+    array = np.asarray(array, dtype=np.float32)
+    array = np.nan_to_num(array)
+    array = np.maximum(array, 0.0)
+    if not array.size:
+        return array
+    maximum = float(np.max(array))
+    if not np.isfinite(maximum) or maximum <= np.finfo(np.float32).eps:
+        return np.zeros_like(array, dtype=np.float32)
+    return (float(max_depth) * array / maximum).astype(np.float32)
+
+
 def effective_train_batches(air_data, depth_data, config):
     train_limit = min(len(air_data), len(depth_data))
     if config.train_size != np.inf:
